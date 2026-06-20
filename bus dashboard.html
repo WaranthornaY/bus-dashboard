@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Bus Status</title>
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --panel: #ffffff;
+    --border: #dadde0;
+    --text: #1c1f23;
+    --muted: #6b7280;
+    --accent: #c2410c;
+    --good: #15803d;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 28px 16px 40px;
+  }
+
+  .topbar {
+    width: 100%;
+    max-width: 560px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 18px;
+  }
+
+  h1 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+
+  #connBtn {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 7px 14px;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    cursor: pointer;
+  }
+  #connBtn.live {
+    border-color: var(--good);
+    color: var(--good);
+  }
+  #connBtn:hover { border-color: var(--accent); color: var(--accent); }
+
+  table {
+    width: 100%;
+    max-width: 560px;
+    border-collapse: collapse;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    table-layout: fixed;
+  }
+
+  th:first-child, td:first-child { width: 45%; }
+  th:last-child, td:last-child { width: 55%; }
+
+  thead th {
+    text-align: left;
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    font-weight: 600;
+    padding: 12px 16px;
+    background: #fafafa;
+    border-bottom: 1px solid var(--border);
+  }
+
+  tbody td {
+    padding: 16px;
+    font-size: 1.05rem;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  td.value-accent { color: var(--accent); font-size: 1.3rem; }
+
+  .status-line {
+    width: 100%;
+    max-width: 560px;
+    margin-top: 14px;
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-align: right;
+  }
+  .status-line.live { color: var(--good); }
+
+  details {
+    width: 100%;
+    max-width: 560px;
+    margin-top: 18px;
+  }
+  summary {
+    color: var(--muted);
+    font-size: 0.78rem;
+    cursor: pointer;
+  }
+  #log {
+    background: #111;
+    color: #6fff8f;
+    font-family: 'Roboto Mono', monospace;
+    font-size: 0.72rem;
+    height: 140px;
+    overflow-y: auto;
+    padding: 10px;
+    border-radius: 8px;
+    margin-top: 8px;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Bus Status</h1>
+  <button id="connBtn">Connect micro:bit</button>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Field</th>
+      <th>Value</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Bus No.</td>
+      <td id="busNo">—</td>
+    </tr>
+    <tr>
+      <td>Arrival time</td>
+      <td class="value-accent" id="arrivalVal">— min</td>
+    </tr>
+    <tr>
+      <td>Price per trip</td>
+      <td id="priceVal">— THB</td>
+    </tr>
+    <tr>
+      <td>Last update</td>
+      <td id="lastUpdate">—</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="status-line" id="statusLine">Not connected</div>
+
+<details>
+  <summary>Raw Bluetooth log</summary>
+  <div id="log"></div>
+</details>
+
+<script>
+// Nordic UART Service (used by the micro:bit Bluetooth "uart" blocks)
+const NUS_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const NUS_TX = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // micro:bit -> browser (notify)
+const NUS_RX = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // browser -> micro:bit (write)
+
+let device, txChar, rxChar;
+let lineBuffer = '';
+
+const connBtn = document.getElementById('connBtn');
+const statusLine = document.getElementById('statusLine');
+const logEl = document.getElementById('log');
+const busNoEl = document.getElementById('busNo');
+const arrivalEl = document.getElementById('arrivalVal');
+const priceEl = document.getElementById('priceVal');
+const lastUpdateEl = document.getElementById('lastUpdate');
+
+function log(msg) {
+  logEl.textContent += msg + '\n';
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setConnected(isLive) {
+  connBtn.textContent = isLive ? 'Disconnect' : 'Connect micro:bit';
+  connBtn.classList.toggle('live', isLive);
+  statusLine.textContent = isLive ? 'Live' : 'Not connected';
+  statusLine.classList.toggle('live', isLive);
+}
+
+// Expected line format from micro:bit: BUS,<routeNo>,<arrivalMinutes>,<pricePerTrip>
+// Example: BUS,101,5,15
+function handleLine(line) {
+  log('> ' + line);
+  const parts = line.split(',');
+
+  // Ignore malformed or interleaved lines: must be exactly 4 fields,
+  // with the numeric fields actually being numbers.
+  if (parts.length !== 4 || parts[0] !== 'BUS') return;
+  if (!/^\d+$/.test(parts[2]) || !/^\d+$/.test(parts[3])) return;
+
+  busNoEl.textContent = parts[1];
+  arrivalEl.textContent = parts[2] + ' min';
+  priceEl.textContent = parts[3] + ' THB';
+  lastUpdateEl.textContent = new Date().toLocaleTimeString();
+}
+
+function handleNotification(event) {
+  const text = new TextDecoder().decode(event.target.value);
+  lineBuffer += text;
+  let lines = lineBuffer.split('\n');
+  lineBuffer = lines.pop();
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length > 0) handleLine(trimmed);
+  }
+}
+
+function onDisconnected() {
+  setConnected(false);
+  log('-- disconnected --');
+}
+
+async function connect() {
+  if (!navigator.bluetooth) {
+    alert('Web Bluetooth is not supported in this browser. Use Chrome or Edge on desktop/Android.');
+    return;
+  }
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'BBC micro:bit' }],
+      optionalServices: [NUS_SERVICE]
+    });
+    log('Device selected: ' + device.name);
+
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+
+    log('Connecting to GATT server...');
+    const server = await device.gatt.connect();
+    log('GATT server connected.');
+
+    log('Getting UART service...');
+    const service = await server.getPrimaryService(NUS_SERVICE);
+    log('UART service found.');
+
+    log('Getting TX characteristic...');
+    txChar = await service.getCharacteristic(NUS_TX);
+    log('TX characteristic found. notify=' + txChar.properties.notify +
+        ' indicate=' + txChar.properties.indicate +
+        ' read=' + txChar.properties.read);
+
+    log('Getting RX characteristic...');
+    rxChar = await service.getCharacteristic(NUS_RX);
+    log('RX characteristic found. write=' + rxChar.properties.write +
+        ' writeWithoutResponse=' + rxChar.properties.writeWithoutResponse);
+
+    log('Starting notifications on TX...');
+    await txChar.startNotifications();
+    log('Notifications started.');
+
+    txChar.addEventListener('characteristicvaluechanged', handleNotification);
+
+    setConnected(true);
+    log('-- connected via Bluetooth --');
+  } catch (err) {
+    log('Connection failed at step above: ' + err.name + ' - ' + err.message);
+  }
+}
+
+async function disconnect() {
+  try {
+    if (device && device.gatt.connected) {
+      device.gatt.disconnect();
+    }
+  } catch (err) {
+    log('Error while disconnecting: ' + err.message);
+  }
+}
+
+connBtn.addEventListener('click', () => {
+  if (connBtn.classList.contains('live')) {
+    disconnect();
+  } else {
+    connect();
+  }
+});
+</script>
+
+</body>
+</html>
